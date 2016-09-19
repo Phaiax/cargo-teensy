@@ -1,0 +1,13 @@
+[package]
+name = "teensy"
+version = "0.1.0"
+authors = ["Phaiax <phaiax-git@invisibletower.de>"]
+
+[[bin]]
+name = "cargo-teensy"
+test = false
+
+[dependencies]
+docopt = "0.6"
+rustc-serialize = "0.3"
+toml = "0.2"
