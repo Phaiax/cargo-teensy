@@ -2,6 +2,8 @@
 name = "teensy"
 version = "0.1.0"
 authors = ["Phaiax <phaiax-git@invisibletower.de>"]
+description = "Teensy (3.1) project builder and upload helper"
+repository = "https://github.com/Phaiax/cargo-teensy"
 
 [[bin]]
 name = "cargo-teensy"
