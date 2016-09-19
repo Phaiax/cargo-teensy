@@ -1,20 +1,28 @@
+#![feature(btree_append)]
 
 extern crate rustc_serialize;
 extern crate docopt;
 extern crate toml;
+extern crate curl;
+extern crate yaml_rust;
+extern crate regex;
 
+use regex::Regex;
 use docopt::Docopt;
 use std::process::{self, ExitStatus, Command};
 use std::fs::{File, DirBuilder};
 use std::io::Read;
 use std::io::Write;
+use yaml_rust::{YamlLoader};
+use yaml_rust::yaml::Yaml;
+use curl::easy::Easy;
 
 const USAGE: &'static str = "
 Teensy in one command.
 
 Usage:
   cargo teensy upload [options]
-  cargo teensy new <name>
+  cargo teensy new [--ignore-version] <name>
   cargo teensy (-h | --help)
   cargo teensy --version
 
@@ -22,6 +30,7 @@ Options:
   -r --hard-reboot     teensy_loader_cli: Use hard reboot if device not online
   -s --soft-reboot     teensy_loader_cli: Use soft reboot if device not online (Teensy3.x only)
   -n --no-reboot       teensy_loader_cli: No reboot after programming
+  --ignore-version     Do not stop if rustc versions do not match
   -v --verbose         Show commands before executing
   -h --help            Show this screen.
   --version            Show version.
@@ -104,9 +113,17 @@ default = ["mcu_k20"]
 mcu_k20 = ["zinc/mcu_k20"] # also enables the mcu_k20 feature in the zinc crate
 
 [dependencies]
-zinc = { path =  "../zinc" }
-macro_zinc = { path = "../zinc/macro_zinc" }
 rust-libcore = "*"
+
+[dependencies.zinc]
+git = "https://github.com/hackndev/zinc.git"
+branch = "master"
+
+[dependencies.macro_zinc]
+git = "https://github.com/hackndev/zinc.git"
+branch = "master"
+path = "macro_zinc"
+
 "#;
 
 const CARGOCONFIG: &'static [u8] = br#"
@@ -126,6 +143,7 @@ struct Args {
     flag_hard_reboot: bool,
     flag_no_reboot: bool,
     flag_verbose: bool,
+    flag_ignore_version: bool,
     cmd_upload: bool,
     cmd_new: bool,
     arg_name: String,
@@ -208,6 +226,8 @@ fn cargo_new(args : &Args) -> (ExitStatus, String) {
     execute(command, &args)
 }
 
+
+
 fn write_abi(_ : &Args) {
     let mut f = File::create("thumbv7em-none-eabi.json").unwrap();
     f.write_all(ABIJSON).unwrap();
@@ -235,6 +255,67 @@ fn write_cargo_helper(_: &Args) {
     f.write_all(CARGOCONFIG).unwrap();    
 }
 
+fn get_zinc_travis_yaml(_: &Args) -> String {
+    let mut dst = Vec::new();
+
+    {
+        let mut easy = Easy::new();
+        easy.url("https://raw.githubusercontent.com/hackndev/zinc/master/.travis.yml").expect("not a url");
+
+        let mut transfer = easy.transfer();
+        transfer.write_function(|data| {
+            dst.extend_from_slice(data);
+            Ok(data.len())
+        }).unwrap();
+        transfer.perform().expect("transfer failed");
+    }
+    let travis = String::from_utf8(dst).unwrap();
+
+    let docs = YamlLoader::load_from_str(&travis).expect("Not a yaml file");
+    let doc = &docs[0]; // select the first document
+    let rustversionline = doc.as_hash().unwrap().get(&Yaml::String("rust".into())).unwrap().as_str().unwrap();
+    get_nightly_version(rustversionline).into()    
+}
+
+fn rustc_version(_ : &Args) -> String {
+    let mut command = Command::new("rustup");
+    command.arg("show");
+    let output = command.output().expect("could not execute rustc --version");
+    let output = &String::from_utf8_lossy(&output.stdout);
+    let active = &output[output.find("active toolchain").unwrap()..];
+    get_nightly_version( &active ).into()
+}
+
+fn get_nightly_version(txt : &str) -> &str {
+    if txt.find("stable").is_some() {
+        return txt;
+    }
+    let re = Regex::new(r".*(\d{4}-\d{2}-\d{2}).*").unwrap();
+    re.captures_iter(txt).next().unwrap().at(1).unwrap()
+}
+
+fn assert_rust_version(args : &Args) {
+    let rustversion = get_zinc_travis_yaml(&args);
+    let rustcinstalled = rustc_version(&args);
+
+
+    if rustversion != rustcinstalled{
+        if args.flag_ignore_version {
+            println!("Note: Installed rust version {} does not match the version {} defined in\
+                      github.com/hackndev/zinc/master/.travis.yml.", rustcinstalled, rustversion);
+        } else {
+            println!("Error: Installed rust version {} does not match the version {} defined in \
+                      github.com/hackndev/zinc/master/.travis.yml.\n\
+                      Install with: rustup override set nightly-{}\n\
+                      Or use: cargo teensy new --ignore-version",
+                      rustcinstalled, rustversion, rustversion);
+            process::exit(-1);
+        }
+
+    }
+    return;
+}
+
 fn main() {
     let args: Args = Docopt::new(USAGE)
                             .and_then(|d| { d.decode() })
@@ -255,6 +336,7 @@ fn main() {
 
         println!("Upload successful");
     } else if args.cmd_new {
+        assert_rust_version(&args);
 
         cargo_new(&args);
         std::env::set_current_dir(&args.arg_name).unwrap();
